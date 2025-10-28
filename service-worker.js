@@ -1,85 +1,84 @@
-const CACHE_NAME = 'app-shell-v1';
+// service-worker.js
 
-// List of all the files that make up the "app shell"
-// This includes your main HTML file, CSS, and the core JavaScript libraries.
-// NOTE: I've assumed your main file is named 'index.html'. If not, change it.
+const CACHE_NAME = 'pagerrysmart-v1';
 const urlsToCache = [
-  '/',
-  'index.html', // Add the name of your main HTML file here
-  'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css',
-  'https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js',
-  'https://www.gstatic.com/firebasejs/9.22.1/firebase-auth-compat.js',
-  'https://www.gstatic.com/firebasejs/9.22.1/firebase-firestore-compat.js',
-  'https://www.gstatic.com/firebasejs/9.22.1/firebase-database-compat.js'
+    '/',
+    '/index.html'
+    // If you had external CSS or JS files, you would list them here.
+    // Since your CSS/JS are in your HTML file, you don't need to list them.
 ];
 
-// Install Event: Cache all the essential app shell files
+// 1. INSTALL EVENT: Cache the app shell
 self.addEventListener('install', event => {
-  event.waitUntil(
-    caches.open(CACHE_NAME)
-      .then(cache => {
-        console.log('Service Worker: Caching app shell');
-        return cache.addAll(urlsToCache);
-      })
-      .then(() => {
-        console.log('Service Worker: App shell cached successfully');
-        // Force the new service worker to become active immediately
-        return self.skipWaiting();
-      })
-  );
+    event.waitUntil(
+        caches.open(CACHE_NAME)
+            .then(cache => {
+                console.log('Service Worker: Caching app shell');
+                return cache.addAll(urlsToCache);
+            })
+    );
 });
 
-// Activate Event: Clean up old caches to save space
-self.addEventListener('activate', event => {
-  const cacheWhitelist = [CACHE_NAME];
-  event.waitUntil(
-    caches.keys().then(cacheNames => {
-      return Promise.all(
-        cacheNames.map(cacheName => {
-          // If a cache name is not in our whitelist, delete it
-          if (cacheWhitelist.indexOf(cacheName) === -1) {
-            console.log('Service Worker: Deleting old cache:', cacheName);
-            return caches.delete(cacheName);
-          }
-        })
-      );
-    }).then(() => {
-        console.log('Service Worker: Activated and now controlling clients');
-        // Take control of all open pages immediately
-        return self.clients.claim();
-    })
-  );
-});
-
-// Fetch Event: Intercept network requests
+// 2. FETCH EVENT: The core logic for handling requests
 self.addEventListener('fetch', event => {
-  const request = event.request;
+    const requestUrl = new URL(event.request.url);
 
-  // For navigation requests (loading the page itself), use a "Cache First" strategy.
-  // This ensures the app shell loads offline.
-  if (request.mode === 'navigate') {
+    // --- STRATEGY 1: NETWORK FIRST for Firebase API Calls ---
+    // This is the most important fix. We must always try the network first for Firebase.
+    if (requestUrl.hostname.includes('firebaseio.com') || requestUrl.hostname.includes('firestore.googleapis.com') || requestUrl.hostname.includes('googleapis.com')) {
+        
+        event.respondWith(
+            caches.open(CACHE_NAME).then(cache => {
+                // Try to fetch from the network
+                return fetch(event.request)
+                    .then(response => {
+                        // If the network request is successful, cache the response for offline use
+                        // We only cache successful responses (status 200)
+                        if (response.status === 200) {
+                            cache.put(event.request.url, response.clone());
+                        }
+                        return response;
+                    })
+                    .catch(() => {
+                        // If the network fails completely, try to get the last cached version
+                        // This is what allows your app to work offline
+                        console.log('Service Worker: Network failed. Serving from cache:', event.request.url);
+                        return cache.match(event.request);
+                    });
+            })
+        );
+        return; // Stop processing this event further
+    }
+
+    // --- STRATEGY 2: CACHE FIRST for Static Assets (App Shell) ---
+    // For all other requests (like your index.html), serve from cache first for instant loading.
     event.respondWith(
-      caches.match(request).then(cachedResponse => {
-        // If the request is in the cache, return it immediately.
-        if (cachedResponse) {
-          return cachedResponse;
-        }
-        // Otherwise, fetch it from the network.
-        return fetch(request);
-      })
+        caches.match(event.request)
+            .then(response => {
+                // If the request is in the cache, return it immediately
+                if (response) {
+                    return response;
+                }
+                // If not in the cache, fetch it from the network
+                return fetch(event.request);
+            })
     );
-  } else {
-    // For all other requests (assets, API calls, etc.), also use "Cache First".
-    // This is great for performance and offline access to static assets.
-    event.respondWith(
-      caches.match(request).then(cachedResponse => {
-        // Return cached version if available
-        if (cachedResponse) {
-          return cachedResponse;
-        }
-        // If not in cache, fetch from network
-        return fetch(request);
-      })
+});
+
+// 3. ACTIVATE EVENT: Clean up old caches
+self.addEventListener('activate', event => {
+    const cacheWhitelist = [CACHE_NAME]; // Only keep the current cache
+    event.waitUntil(
+        caches.keys().then(cacheNames => {
+            return Promise.all(
+                cacheNames.map(cacheName => {
+                    // If a cache name is not in our whitelist, delete it
+                    if (cacheWhitelist.indexOf(cacheName) === -1) {
+                        console.log('Service Worker: Deleting old cache:', cacheName);
+                        return caches.delete(cacheName);
+                    }
+                })
+            );
+        })
     );
-  }
 });
